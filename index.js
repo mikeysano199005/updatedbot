@@ -1,54 +1,78 @@
 require('dotenv').config();
-
-console.log("🚀 Starting bot...");
-
 const TelegramBot = require('node-telegram-bot-api');
 const sqlite3 = require('sqlite3').verbose();
 const { ChartJSNodeCanvas } = require('chartjs-node-canvas');
-require('chart.js/auto');
+const Chart = require('chart.js');
+const express = require('express');
 
+// ===== EXPRESS KEEP-ALIVE SERVER =====
+const app = express();
+app.get('/', (req, res) => res.send('Bot is running'));
+app.listen(process.env.PORT || 3000);
+
+// ===== TELEGRAM BOT =====
 const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
 const db = new sqlite3.Database('./database.db');
+const chartCanvas = new ChartJSNodeCanvas({ width: 800, height: 400 });
 
-// ===== CONFIG: Replace with your private channel =====
-const CHANNEL = -1003861424843; // or numeric ID like -1001234567890
-
-const chartCanvas = new ChartJSNodeCanvas({
-  width: 800,
-  height: 400
-});
+// ===== CHANNEL SETUP =====
+let CHANNEL = process.env.CHANNEL ? Number(process.env.CHANNEL) : null;
 
 // ===== DATABASE =====
 db.serialize(() => {
   db.run(`
-  CREATE TABLE IF NOT EXISTS signals (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    multiplier REAL,
-    result REAL,
-    status TEXT
-  )`);
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    )`);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS signals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      multiplier REAL,
+      result REAL,
+      status TEXT
+    )`);
+
   console.log("✅ Database ready");
 });
 
-// ===== SIGNAL GENERATOR =====
-function generateSignal() {
-  const r = Math.random();
-  if (r < 0.6) return parseFloat((Math.random()*1.5 + 1.2).toFixed(2));
-  if (r < 0.9) return parseFloat((Math.random()*2 + 2).toFixed(2));
-  return parseFloat((Math.random()*4 + 4).toFixed(2));
+// ===== SAVE CHANNEL =====
+function saveChannel(id) {
+  CHANNEL = id;
+  db.run(`INSERT OR REPLACE INTO settings (key,value) VALUES ('channel', ?)`, [id]);
 }
 
-// ===== CHART GENERATOR =====
+// ===== START COMMAND =====
+bot.onText(/\/start/, (msg) => {
+  bot.sendMessage(msg.chat.id, `
+🤖 Bot Ready
+
+📊 Signals every 30 seconds  
+📈 AI-style charts  
+🔥 Stay tuned...
+  `);
+});
+
+// ===== SIGNAL GENERATION =====
+function generateSignal() {
+  const r = Math.random();
+  if (r < 0.6) return (Math.random() * 1.5 + 1.2).toFixed(2);
+  if (r < 0.9) return (Math.random() * 2 + 2).toFixed(2);
+  return (Math.random() * 4 + 4).toFixed(2);
+}
+
+// ===== CHART GENERATION =====
 async function generateChart(multiplier) {
   let data = [];
   let value = 1;
 
   for (let i = 0; i < 20; i++) {
-    value = Math.max(0, value + (Math.random() - 0.5) * 0.5);
-    data.push(parseFloat(value.toFixed(2)));
+    value += (Math.random() - 0.3);
+    data.push(value);
   }
 
-  data.push(multiplier);
+  data.push(Number(multiplier));
 
   return await chartCanvas.renderToBuffer({
     type: 'line',
@@ -57,22 +81,21 @@ async function generateChart(multiplier) {
       datasets: [{
         label: 'AI Market Trend',
         data: data,
-        borderColor: 'rgba(75, 192, 192, 1)',
-        backgroundColor: 'rgba(75, 192, 192, 0.2)',
         tension: 0.4
       }]
     }
   });
 }
 
-// ===== MESSAGES =====
+// ===== MESSAGE FORMATTING =====
 function signalMessage(id, m) {
   return `
 🤖 *AI SIGNAL #${id}*
 
 🎯 Entry: *${m}x*
 
-📊 Confidence: ${m <= 2 ? "🟢 Strong" : m <= 4 ? "🟡 Medium" : "🔴 High Risk"}
+📊 Confidence:
+${m <= 2 ? "🟢 Strong" : m <= 4 ? "🟡 Medium" : "🔴 High Risk"}
 
 ━━━━━━━━━━━━━━━
 ⏱ Result in 15 sec
@@ -91,8 +114,13 @@ ${status === "WIN" ? "✅ WIN" : "❌ LOSS"}
 `;
 }
 
-// ===== START BOT =====
-async function startBot() {
+// ===== MAIN LOOP =====
+function startBot() {
+  if (!CHANNEL) {
+    console.log("⚠️ No channel set. Set CHANNEL env variable to your numeric channel ID.");
+    return;
+  }
+
   async function autoPost() {
     console.log("⏱ Sending signal...");
 
@@ -107,9 +135,8 @@ async function startBot() {
         parse_mode: "Markdown"
       }).catch(err => console.log("❌ Send error:", err.message));
 
-      // Send result after 15 seconds
       setTimeout(() => {
-        const crash = parseFloat((Math.random()*5 + 1).toFixed(2));
+        const crash = (Math.random() * 5 + 1).toFixed(2);
         const status = crash >= multiplier ? "WIN" : "LOSS";
 
         db.run(`UPDATE signals SET result=?, status=? WHERE id=?`,
@@ -119,8 +146,8 @@ async function startBot() {
           resultMessage(multiplier, crash, status),
           { parse_mode: "Markdown" }
         );
-      }, 15000);
 
+      }, 15000);
     });
   }
 
@@ -128,19 +155,8 @@ async function startBot() {
   setInterval(autoPost, 30000);
 }
 
-// ===== /start COMMAND =====
-bot.onText(/\/start/, (msg) => {
-  bot.sendMessage(msg.chat.id, `
-🤖 Bot Ready
-
-📊 Signals every 30 seconds  
-📈 AI-style charts  
-🔥 Posting directly to your private channel
-  `);
-});
-
 // ===== POLLING ERRORS =====
 bot.on("polling_error", console.log);
 
-// ===== RUN BOT =====
+// ===== START BOT =====
 startBot();
